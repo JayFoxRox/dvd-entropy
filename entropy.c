@@ -25,154 +25,101 @@
  */
 
 #include <errno.h>
-#include <getopt.h>
+#include <inttypes.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
 
 #define ERRORMESSAGE(output) printf("%s failed in function %s in file %s line %d with:\n%s\n", \
-	output,__FUNCTION__,__FILE__,__LINE__, strerror(errno));
+  output,__FUNCTION__,__FILE__,__LINE__, strerror(errno));
 
 #define CATCHERROR(condition, output) { if (condition) { ERRORMESSAGE(output) exit(1);} }
 
-#define BUFFER_SIZE 4096
+uint64_t readByte[256];
+uint64_t allReadBytes;
 
-int readByte[256];
-int allReadBytes;
-
-char * buffer;
-char * fname;
-
-char optionRecurse = 0;
-int symbolsize = 8;
-
-long long unsigned int outputNorm = 8;
-
-void init()
-{
-	memset( &readByte, 0, 256);
-	allReadBytes = 0;
-
-	buffer = (char*) malloc (sizeof(char) * BUFFER_SIZE);
-	CATCHERROR ( !buffer, "malloc");
+void reset() {
+  memset(readByte, 0, sizeof(readByte));
+  allReadBytes = 0;
 }
 
-void inspectFile(char *fname)
-{
-	FILE * pFile;
-	long lSize;
-
-	size_t i, result;
-
-	pFile = fopen ( fname , "rb" );
-	CATCHERROR( !pFile, "open");
-
-	while (!feof(pFile)) {
-		result = fread (buffer, 1, BUFFER_SIZE, pFile);
-		CATCHERROR ( ferror(pFile), "fread");
-
-		allReadBytes += result;
-		for (i = 0; i < result; i++)
-			readByte[(unsigned char)(buffer[i])]++;
-	}
-	// terminate
-	fclose (pFile);
+void addData(const uint8_t* buffer, size_t size) {
+  allReadBytes += size;
+  while(size--) {
+    readByte[*buffer++]++;
+  }
 }
 
-void displayResult()
-{
-	int i = 0;
-	int count = 0;
-	double plogp = 0;
-	double entropy = 0;
-	double all = allReadBytes;
+double getResult() {
+  uint64_t count = 0;
+  double plogp = 0;
+  double entropy = 0;
+  double all = allReadBytes;
 
-	for (i = 0; i < 256 ; i++) {
-		if (readByte[i]) {
-			double p = readByte[i] / all;
-			plogp -= p * log(p);
-		}
-		count+=readByte[i];
-	}
-	CATCHERROR( count!= allReadBytes, "internal error");
+  unsigned int i;
+  for (i = 0; i < 256; i++) {
+    if (readByte[i] == 0) {
+      continue;
+    }
+    double p = readByte[i] / all;
+    plogp -= p * log(p);
+    count += readByte[i];
+  }
+  printf("%" PRIu64 " / %" PRIu64 "\n", count, allReadBytes);
+  CATCHERROR(count != allReadBytes, "internal error");
 
-	plogp /= log(2);
-	entropy = allReadBytes * plogp; // measured in bit
-	printf("%f\n", entropy / outputNorm);
+  plogp /= log(2);
+  entropy = allReadBytes * plogp; // measured in bit
+  return entropy;
 }
 
-void printusage(void)
-{
-	printf("entropy <filename>\n");
-	printf("<filename>\tfile to inspect\n");
-	exit(1);
+void printusage(void) {
+  printf("entropy <filename>\n");
+  printf("<filename>\tfile to inspect\n");
+  exit(1);
 }
 
-int main(int argc, char *argv[])
-{
-	int c;
-    static struct option long_options[] = {
-        {"output", 1, 0, 'o'},
-        {NULL, 0, NULL, 0}
-    };
-    int option_index = 0;
-    while ((c = getopt_long(argc, argv, "ro:s:",
-			long_options, &option_index)) != -1) {
-        int this_option_optind = optind ? optind : 1;
-        switch (c) {
-        case 'o':
-            if (!strcmp(optarg, "b")) {
-				outputNorm = 1;
-			} else if (!strcmp(optarg, "B")) {
-				outputNorm = (long) 8;
-			} else if (!strcmp(optarg, "k")) {
-				outputNorm = (long) 8 * 1024;
-			} else if (!strcmp(optarg, "m")) {
-				outputNorm = (long) 8 * 1024 * 1024;
-			} else if (!strcmp(optarg, "g")) {
-				outputNorm = (long) 8 * 1024 * 1024 * 1024;
-			} else if (!strcmp(optarg, "t")) {
-				outputNorm = (long) 8 * 1024 * 1024 * 1024 * 1024;
-			} else if (!strcmp(optarg, "K")) {
-				outputNorm = (long) 8 * 1000;
-			} else if (!strcmp(optarg, "M")) {
-				outputNorm = (long) 8 * 1000 * 1000;
-			} else if (!strcmp(optarg, "G")) {
-				outputNorm = (long) 8 * 1000 * 1000 * 1000;
-			} else if (!strcmp(optarg, "T")) {
-				outputNorm = (long) 8 * 1000 * 1000 * 1000 * 1000;
-			} else {
-				printf("no valid output size: %s\n", optarg);
-				exit(1);
-			}
-            break;
+int main(int argc, char *argv[]) {
+  if (argc != 2) {
+    printusage();
+  }
 
-        case 's':
-			symbolsize = atoi(optarg);
+  char* fname = argv[1];
 
-        case 'r':
-			optionRecurse = 1;
-			break;
-        case '?':
-            break;
-        default:
-            printf ("?? getopt returned character code 0%o ??\n", c);
-        }
+  FILE * pFile;
+  long lSize;
+
+
+  pFile = fopen(fname, "rb");
+  CATCHERROR( !pFile, "open");
+
+  unsigned int sector = 0;
+  while (!feof(pFile)) {
+#define BUFFER_SIZE 2048
+    uint8_t buffer[BUFFER_SIZE];
+    size_t count = fread(buffer, 1, BUFFER_SIZE, pFile);
+    CATCHERROR(count != BUFFER_SIZE, "read failed");
+    CATCHERROR(ferror(pFile), "fread");
+
+    reset();
+    addData(buffer, count);
+    double entropy = getResult();
+
+    if (entropy > (0.98 * (BUFFER_SIZE * 8))) {
+      printf("Looks random! ");
     }
 
-    init();
+    printf("Sector %d: entropy = %f\n", sector, entropy);
 
-    if (optind == argc)
-		printusage();
+    sector += 1;
+  }
+  // terminate
+  fclose (pFile);
 
-	while (optind < argc)
-		inspectFile(argv[optind++]);
-
-	displayResult();
-
-	free (buffer);
+  return 0;
 }
 
 
